@@ -1,0 +1,719 @@
+---
+title: "Laminar Analysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+# library(data.table)
+library(dplyr)
+library(nlme)
+library(emmeans)
+# library(ggpubr)
+# library(sjstats)
+# library(NbClust)
+# library(cluster)
+# library(factoextra)
+# library(MASS)
+library(FSA)
+library(car)
+library(stringr)
+library(leaps)
+
+windowsFonts(Times=windowsFont("Times New Roman"))
+
+mydata <- read.csv("Trimmed_Data.csv")
+
+### make decay numeric rather than string
+mydata$Decay <- as.numeric(mydata$Decay)
+
+### change distance from pixels to um, 1 pixel = 6 um
+mydata$Euc_dist <- mydata$Euc_dist*6
+
+### subtract time of stim from latency
+  for (i in 1:nrow(mydata)) {
+    if (mydata$Date[i] %in% c("09-09-2020","09-10-2020","09-11-2020")) {
+      mydata$Latency[i] <- mydata$Latency[i] - 50 #stim at frame 100
+    }
+    else {
+      mydata$Latency[i] <- mydata$Latency[i] - 49 #stim at frame 98
+    }
+  }
+
+### multiply amp by 100 to get percent delta F / F
+mydata$Amp <- mydata$Amp*100
+
+### add column to give each slice a unique identifier
+mydata <- mutate(mydata,"Date_Slice_Loc_Run"=paste(mydata$Date,"_",mydata$Slice_Loc,sep="")) #diff ids for same slice and loc but diff set of 5x15 trials
+mydata <- mutate(mydata,"Date_Slice_Loc"=str_sub(mydata$Date_Slice_Loc_Run,end=-4)) #diff ids for same slice and loc but diff set of 5x15 trials
+
+### add column for latency / distance ie NormLat
+# mydata <- mutate(mydata,"NormLat"=(mydata$Latency/(mydata$Euc_dist/100)))
+mydata <- mutate(mydata,"NormLat"=(mydata$Latency/mydata$Euc_dist))
+# mydata <- mutate(mydata,"NormLat"=(mydata$Euc_dist/mydata$Latency))
+
+### add column to indicate whether roi is inter or intralaminar to stim electrode
+mydata <- mutate(mydata,Laminar=case_when(mydata$Stim_Layer == mydata$Layers ~ "Intra", 
+                                          mydata$Stim_Layer != mydata$Layers ~ "Inter"))
+
+```
+
+``` {add ages, include=FALSE}
+### add age column
+mydata <- mutate(mydata,"Age"=NA) #age in days
+mydata$Age[which(mydata$Date=="09-09-2020")] <- 123
+mydata$Age[which(mydata$Date=="09-10-2020")] <- 124
+mydata$Age[which(mydata$Date=="09-11-2020")] <- 228
+mydata$Age[which(mydata$Date=="12-28-2020")] <- 45 
+mydata$Age[which(mydata$Date=="01-18-2021")] <- 42 
+mydata$Age[which(mydata$Date=="01-19-2021")] <- 43 
+mydata$Age[which(mydata$Date=="03-02-2021")] <- 48 
+mydata$Age[which(mydata$Date=="04-13-2021")] <- 49 
+mydata$Age[which(mydata$Date=="05-25-2021")] <- 49 
+mydata$Age[which(mydata$Date=="05-26-2021")] <- 47 
+mydata$Age[which(mydata$Date=="05-31-2021")] <- 52
+mydata$Age[which(mydata$Date=="06-28-2021")] <- 42 
+mydata$Age[which(mydata$Date=="06-29-2021")] <- 43 
+mydata$Age[which(mydata$Date=="08-06-2021")] <- 49 
+mydata$Age[which(mydata$Date=="08-09-2021")] <- 61 
+mydata$Age[which(mydata$Date=="08-31-2021")] <- 49 
+mydata$Age[which(mydata$Date=="09-06-2021")] <- 44 
+mydata$Age[which(mydata$Date=="09-08-2021")] <- 45
+mydata$Age[which(mydata$Date=="10-04-2021")] <- 54 
+mydata$Age[which(mydata$Date=="10-05-2021")] <- 50
+mydata$Age[which(mydata$Date=="11-15-2021")] <- 46
+mydata$Age[which(mydata$Date=="11-16-2021")] <- 46
+mydata$Age[which(mydata$Date=="11-22-2021")] <- 44
+mydata$Age[which(mydata$Date=="11-23-2021")] <- 42
+mydata$Age[which(mydata$Date=="11-29-2021")] <- 47
+mydata$Age[which(mydata$Date=="11-30-2021")] <- 49
+mydata$Age[which(mydata$Date=="12-06-2021")] <- 46
+mydata$Age[which(mydata$Date=="12-07-2021")] <- 41
+mydata$Age[which(mydata$Date=="12-08-2021")] <- 42
+mydata$Age[which(mydata$Date=="12-13-2021")] <- 38
+mydata$Age[which(mydata$Date=="12-20-2021")] <- 29
+mydata$Age[which(mydata$Date=="01-24-2022")] <- 69
+mydata$Age[which(mydata$Date=="01-25-2022")] <- 72
+mydata$Age[which(mydata$Date=="01-31-2022")] <- 69
+mydata$Age[which(mydata$Date=="02-01-2022")] <- 78
+mydata$Age[which(mydata$Date=="02-02-2022")] <- 71
+mydata$Age[which(mydata$Date=="02-07-2022")] <- 76
+mydata$Age[which(mydata$Date=="02-08-2022")] <- 77
+mydata$Age[which(mydata$Date=="02-21-2022")] <- 55
+mydata$Age[which(mydata$Date=="02-23-2022")] <- 57
+mydata$Age[which(mydata$Date=="02-24-2022")] <- 58
+mydata$Age[which(mydata$Date=="02-25-2022")] <- 58
+```
+
+``` {remove rois outside acceptable parameters}
+####################################
+####################################
+
+### remove rois which are fxr1 ko
+mydata <- mydata[which(mydata$Tx!="FXR1_KO"),]
+
+####################################
+####################################
+
+
+### keep only animals younger than 100 days
+mydata <- mydata[which(mydata$Age<100),]
+
+### keep only responses to 200 uA stim
+mydata <- mydata[which(mydata$Stim_Intensity==200),]
+# mydata <- mydata[which(mydata$Stim_Intensity==100),]
+
+### keep only rois with more than 1 pixel
+mydata <- mydata[which(mydata$nPixel>1),]
+
+### keep only rois > 45 um from stim electrode
+mydata <- mydata[which(mydata$Euc_dist>45),]
+
+### keep only responses with latency > 1 msec after stim
+mydata <- mydata[which(mydata$Latency>1),]
+# mydata <- mydata[which(mydata$Latency>0.5),]
+
+### keep only responses where roi was calculated correctly ie keep if "Layers" is not NA
+mydata <- mydata[which(mydata$Layers!=""),]
+
+### keep only responses with positive amp, halfwidth, snr, rise, and decay values
+mydata <- mydata[which(mydata$Amp>0),]
+mydata <- mydata[which(mydata$Halfwidth>0),]
+mydata <- mydata[which(mydata$Latency>0),]
+mydata <- mydata[which(mydata$Rise>0),]
+mydata <- mydata[which(mydata$Decay>0),]
+
+### keep only responses to stim in L2/3 or L4 (not L5)
+mydata <- mydata[c(which(mydata$Stim_Layer=="2_3"),which(mydata$Stim_Layer=="4")),]
+
+### keep only responses in L2/3 and L4
+mydata <- mydata[c(which(mydata$Layers=="2_3"),which(mydata$Layers=="4")),]
+
+### add columns for log parameters
+mydata <- mutate(mydata,logAmp = NA, logSNR = NA, logHalf = NA, logLat = NA, logNormLat = NA, logRise = NA, logDecay = NA, stimlayerXreclayer = NA)
+mydata$logAmp <- log(mydata$Amp)
+mydata$logSNR <- log(mydata$SNR)
+mydata$logHalf <- log(mydata$Halfwidth)
+mydata$logSNR <- log(mydata$SNR)
+mydata$logLat <- log(mydata$Latency)
+mydata$logNormLat <- log(mydata$NormLat)
+mydata$logRise <- log(mydata$Rise)
+mydata$logDecay <- log(mydata$Decay)
+mydata$stimlayerXreclayer <- paste(mydata$Stim_Layer,mydata$Layers,sep="_")
+mydata$stimlayerXreclayer <- as.factor(mydata$stimlayerXreclayer)
+
+```
+
+``` {remove outliers}
+
+### amp (in dark area and/or on edge)
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="10-04-2021_07_01_01"),which(mydata$ROI_Id==258))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-22-2021_06_02_02"),which(mydata$ROI_Id==186))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-15-2021_10_01_01"),which(mydata$ROI_Id==49))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-22-2021_10_01_01"),which(mydata$ROI_Id==166))),]
+
+### halfwidth and rise time (calculated incorrectly)
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="10-04-2021_06_01_02"),which(mydata$ROI_Id==12))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-22-2021_03_01_01"),which(mydata$ROI_Id==5))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-22-2021_03_01_01"),which(mydata$ROI_Id==7))),]
+mydata <- mydata[-c(intersect(which(mydata$Date_Slice_Loc_Run=="11-22-2021_05_01_02"),which(mydata$ROI_Id==101))),]
+
+### check for other outliers
+ggplot(aes(y=Amp),data=mydata) + geom_boxplot()
+ggplot(aes(y=Halfwidth),data=mydata) + geom_boxplot()
+ggplot(aes(y=logNormLat),data=mydata) + geom_boxplot()
+ggplot(aes(y=Rise),data=mydata) + geom_boxplot()
+ggplot(aes(y=logDecay),data=mydata) + geom_boxplot()
+
+mydata[which(mydata$Amp>mean(mydata$Amp)+3*(sd(mydata$Amp))),c(1,8,17,20)]
+mydata[which(mydata$Amp<mean(mydata$Amp)-3*(sd(mydata$Amp))),c(1,8,17,20)] #no lower amp outliers
+mydata[which(mydata$Halfwidth>mean(mydata$Halfwidth)+3*(sd(mydata$Halfwidth))),c(1,8,17,24)]
+mydata[which(mydata$Halfwidth<mean(mydata$Halfwidth)-3*(sd(mydata$Halfwidth))),c(1,8,17,24)] #no lower halfwidth outliers
+mydata[which(mydata$Latency>mean(mydata$Latency)+3*(sd(mydata$Latency))),c(1,8,17,23,27,32,37)]
+mydata[which(mydata$Latency<mean(mydata$Latency)-3*(sd(mydata$Latency))),c(1,8,17,23,27,32,37)] #no lower latency outliers
+mydata[which(mydata$Rise>mean(mydata$Rise)+3*(sd(mydata$Rise))),c(1,8,17,25)]
+mydata[which(mydata$Rise<mean(mydata$Rise)-3*(sd(mydata$Rise))),c(1,8,17,25)] #no lower rise outliers
+mydata[which(mydata$Decay>mean(mydata$Decay)+3*(sd(mydata$Decay))),c(1,8,17,26,39)]
+mydata[which(mydata$Decay<mean(mydata$Decay)-3*(sd(mydata$Decay))),c(1,8,17,26,39)] #no lower decay outliers
+
+
+### potential outliers that are okay:
+### 08-09-2021 08-01-04 ROI 164 for halfwidth and decay and 153 for rise
+### 10-04-2021 01-01-01 ROI 107 for halfwidth and 135 for decay
+### 10-04-2021 03-01-01 ROI 90 for decay
+### 10-04-2021 04-01-01 ROI 36 for halfwidth and 129 for halfwidth and rise
+### 11-15-2021 02-03-01 ROIs 115, 141, and 194 for halfwidth and decay and 21 for rise
+### 11-15-2021 05-01-02 ROI 79 for rise
+### 11-15-2021 05-02-01 ROI 88 for amp
+### 11-15-2021 06-02-02 ROI 58 for rise
+### 11-15-2021 08-02-02 ROI 115 for decay and 161 for rise
+### 11-15-2021 10-01-01 ROI 39 for latency
+### 11-22-2021 03-02-01 ROI 127 for amp and 115 for halfwidth and decay
+### 11-22-2021 04-01-01 ROIs 36 and 123 for rise
+### 11-22-2021 05-01-02 ROI 103 for decay
+### 11-22-2021 06-01-03 ROI 42 for decay
+### 11-22-2021 06-02-02 ROI 153 for rise
+### 11-22-2021 08-01-02 ROI 100 for decay
+### 11-29-2021 05-01-01 ROI 202 for rise
+### 11-29-2021 11-01-01 ROI 132 for rise
+### 11-29-2021 13-01-01 ROI 279 for rise
+### 11-29-2021 13-02-01 ROI 108 for decay
+### 01-24-2022 10-01-01 ROI 121 for decay
+### 01-24-2022 11-02-01 ROI 85 for rise
+
+
+```
+
+``` {halfwidth and amp vs distance}
+ggplot(aes(x=Euc_dist,y=Halfwidth),data=mydata) +
+  geom_point() +
+  theme_classic() +
+  scale_y_continuous(expand=c(0,0),limits=c(0,14),breaks=seq(0,14,2)) +
+  scale_x_continuous(expand=c(0,0),limits=c(0,500)) +
+  labs(x="Distance (\u03bcm)",y= "Half-width (msec)") +
+  geom_smooth(method=lm,se=F,color="blue") +
+  theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent')
+       ) 
+# ggsave(filename="halfwidthvsdist.png",bg = "transparent", dpi = 2000,width = 4.5, height = 4, units = "in")
+cor.test(x=mydata$Euc_dist,y=mydata$Halfwidth)
+
+ggplot(aes(x=Euc_dist,y=Amp),data=mydata) +
+  geom_point() +
+  theme_classic() +
+  scale_y_continuous(expand=c(0,0),limits=c(0,1.2),breaks = seq(0,1.2,0.2)) +
+  scale_x_continuous(expand=c(0,0),limits=c(0,500)) +
+  labs(x="Distance (\u03bcm)",y= "Amplitude (% \u0394 F/F)") +
+  geom_smooth(method=lm,se=F,color="blue") +
+  theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent')
+       ) 
+# ggsave(filename="ampvsdist.png",bg = "transparent", dpi = 2000,width = 4.5, height = 4, units = "in")
+cor.test(x=mydata$Euc_dist,y=mydata$Amp)
+
+```
+
+``` {group into average values per slice}
+
+mydata <- mutate(mydata,logAmp = NA, logSNR = NA, logHalf = NA, logLat = NA, logNormLat = NA, logRise = NA, logDecay = NA, stimlayerXreclayer = NA)
+mydata$logAmp <- log(mydata$Amp)
+mydata$logSNR <- log(mydata$SNR)
+mydata$logHalf <- log(mydata$Halfwidth)
+mydata$logSNR <- log(mydata$SNR)
+mydata$logLat <- log(mydata$Latency)
+mydata$logNormLat <- log(mydata$NormLat)
+mydata$logRise <- log(mydata$Rise)
+mydata$logDecay <- log(mydata$Decay)
+mydata$stimlayerXreclayer <- paste(mydata$Stim_Layer,mydata$Layers,sep="_")
+mydata$stimlayerXreclayer <- as.factor(mydata$stimlayerXreclayer)
+
+mydata %>% group_by(Date, Sex) %>% summarize(nROIs = n())
+
+### average response parameters for all rois within a given layer in a given slice
+byslice_mydata <- mydata %>% 
+                  group_by(Date,Date_Slice_Loc,Layers,Stim_Layer,Laminar,Sex,Age) %>% 
+                  add_count() %>%
+                  summarize(Amp=mean(Amp),PeakTime=mean(PeakTime),
+                            SNR = mean(SNR),
+                            Latency=mean(Latency),
+                            NormLat=mean(NormLat),Halfwidth=mean(Halfwidth),
+                            Rise=mean(Rise),Decay=mean(Decay),Dist=mean(Euc_dist),nROIs=n())
+
+### keep given layer from slice only if has >= given number of rois
+# nroisperslice <- mydata %>% group_by(Date_Slice_Loc,Stim_Layer,Layers) %>% summarize(nROIs = n())
+min(byslice_mydata$nROIs)
+byslice_mydata <- byslice_mydata[which(byslice_mydata$nROIs>=8),]
+min(byslice_mydata$nROIs)
+
+
+byslice_mydata %>% group_by(Date,Sex) %>% summarize(nSlices = n())
+byslice_mydata %>%
+  group_by(Layers,Stim_Layer) %>%
+  summarise(nSlices = n(),nROIs = sum(nROIs))
+
+
+### average response parameters for all slices for table
+byslice_mydata %>% 
+  group_by(Stim_Layer,Layers) %>%
+  summarize(nSlices = n())
+
+### add columns for lognorm rise and decay
+byslice_mydata <- mutate(byslice_mydata, logAmp = NA, logSNR = NA, logHalf = NA, logLat = NA, logNormLat = NA, logRise = NA, logDecay = NA, stimlayerXreclayer = NA)
+byslice_mydata$logAmp <- log(byslice_mydata$Amp)
+byslice_mydata$logSNR <- log(byslice_mydata$SNR)
+byslice_mydata$logHalf <- log(byslice_mydata$Halfwidth)
+byslice_mydata$logLat <- log(byslice_mydata$Latency)
+byslice_mydata$logNormLat <- log(byslice_mydata$NormLat)
+byslice_mydata$logRise <- log(byslice_mydata$Rise)
+byslice_mydata$logDecay <- log(byslice_mydata$Decay)
+byslice_mydata$stimlayerXreclayer <- paste(byslice_mydata$Stim_Layer,byslice_mydata$Layers,sep="_")
+byslice_mydata$stimlayerXreclayer <- as.factor(byslice_mydata$stimlayerXreclayer)
+byslice_mydata$laminarXstimlayer <- paste(byslice_mydata$Laminar,byslice_mydata$Stim_Layer,sep="_")
+
+```
+
+``` {by slice, stim layer and recording layer}
+
+###################
+# byslice_mydata %>%
+#   group_by(Stim_Layer, Layers) %>%
+#   summarise(n(), sum(nROIs))
+
+length(unique(byslice_mydata$Date_Slice_Loc))
+length(unique(byslice_mydata$Date[which(byslice_mydata$Sex=="F")]))
+length(unique(byslice_mydata$Date[which(byslice_mydata$Sex=="M")]))
+
+# mydata %>% summarize(meanamp=mean(Amp),seamp=sd(Amp)/(sqrt(nrow(mydata))),
+#                      meanhalf=mean(Halfwidth),sehalf=sd(Halfwidth)/(sqrt(nrow(mydata))),
+#                      meanlat=mean(Latency),selat=sd(Latency)/(sqrt(nrow(mydata))),
+#                      meannormlat=mean(NormLat),senormlat=sd(NormLat)/(sqrt(nrow(mydata))),
+#                      meanrise=mean(Rise),serise=sd(Rise)/(sqrt(nrow(mydata))),
+#                      meandecay=mean(Decay),sedecay=sd(Decay)/(sqrt(nrow(mydata))))
+
+# mydata %>% 
+#   group_by(Stim_Layer,Layers) %>% 
+#   summarize(ampmean=mean(Amp),ampsd = (sd(Amp)/sqrt(nrow(mydata))),
+#             halfsd = (sd(Halfwidth)/sqrt(nrow(mydata))),Halfwidth=mean(Halfwidth),
+#             latmean=mean(Latency),latsd = (sd(Latency)/sqrt(nrow(mydata))),
+#             normlatmean=mean(NormLat),normlatsd = (sd(NormLat)/sqrt(nrow(mydata))),
+#             risemean=mean(Rise),risesd = (sd(Rise)/sqrt(nrow(mydata))),
+#             decaymean=mean(Decay),decaysd = (sd(Decay)/sqrt(nrow(mydata))),
+#             nROIs=n()) %>% print(n=Inf)
+
+
+mydata %>%
+  group_by(Stim_Layer,Layers) %>%
+  summarize(ampmean=mean(Amp),sdamp=sd(Amp),n=n(),seamp=(sd(Amp))/(sqrt(n())),
+            halfmean=mean(Halfwidth),sdhalf=sd(Halfwidth),n=n(),sehalf=(sd(Halfwidth))/(sqrt(n())),
+            latmean=mean(Latency),sdlat=sd(Latency),n=n(),selat=(sd(Latency))/(sqrt(n())),
+            normlatmean=mean(NormLat),sdnormlat=sd(NormLat),n=n(),senormlat=(sd(NormLat))/(sqrt(n())),
+            risemean=mean(Rise),sdrise=sd(Rise),n=n(),serise=(sd(Rise))/(sqrt(n())),
+            decaymean=mean(Decay),sddecay=sd(Decay),n=n(),sedecay=(sd(Decay))/(sqrt(n())))
+
+nrow(unique(byslice_mydata[intersect(which(byslice_mydata$Stim_Layer=="2_3"),which(byslice_mydata$Layers=="2_3")),]))
+nrow(unique(byslice_mydata[intersect(which(byslice_mydata$Stim_Layer=="2_3"),which(byslice_mydata$Layers=="4")),]))
+nrow(unique(byslice_mydata[intersect(which(byslice_mydata$Stim_Layer=="4"),which(byslice_mydata$Layers=="2_3")),]))
+nrow(unique(byslice_mydata[intersect(which(byslice_mydata$Stim_Layer=="4"),which(byslice_mydata$Layers=="4")),]))
+
+###################
+
+######################################
+########## testing normality #########
+######################################
+
+### are parameters normally distributed (original or log norm)? yes
+shapiro.test(byslice_mydata$Amp) # norm distrib
+shapiro.test(byslice_mydata$Halfwidth) # norm distrib
+shapiro.test(byslice_mydata$logLat) # norm distrib
+shapiro.test(byslice_mydata$logNormLat) # norm distrib
+shapiro.test(byslice_mydata$Rise) # norm distrib
+shapiro.test(byslice_mydata$logDecay) # norm distrib
+
+#####################################
+######### testing equal variance ####
+#####################################
+
+### is variance different based on date ie animal? no
+leveneTest(Amp ~ Date,data=byslice_mydata) #no sig diff
+leveneTest(Halfwidth ~ Date,data=byslice_mydata) #no sig diff
+leveneTest(logLat ~ Date,data=byslice_mydata) #no sig diff
+leveneTest(logNormLat ~ Date,data=byslice_mydata) #*** sig diff
+leveneTest(Rise ~ Date,data=byslice_mydata) #no sig diff
+leveneTest(logDecay ~ Date,data=byslice_mydata) #no sig diff
+
+### is variance different based on sex? no
+leveneTest(Amp ~ Sex,data=byslice_mydata) # not sig diff
+leveneTest(Halfwidth ~ Sex,data=byslice_mydata) # not sig diff
+leveneTest(logLat ~ Sex,data=byslice_mydata) # not sig diff
+leveneTest(logNormLat ~ Sex,data=byslice_mydata) # not sig diff
+leveneTest(Rise ~ Sex,data=byslice_mydata) # not sig diff
+leveneTest(logDecay ~ Sex,data=byslice_mydata) # not sig diff
+
+### is variance different between groups for comparison stim layer and recording layer? no
+leveneTest(Amp ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+leveneTest(Halfwidth ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+leveneTest(logLat ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+leveneTest(logNormLat ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+leveneTest(Rise ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+leveneTest(logDecay ~ Layers*Stim_Layer,data=byslice_mydata) # not sig diff
+
+##########################################################
+######### testing effects of not interesting variables####
+##########################################################
+
+### does animal sig affect parameters? yes for amp
+ggplot(aes(y=Amp,x=Date),data=byslice_mydata) + geom_boxplot()
+summary(aov(Amp ~ Date, byslice_mydata)) # 01-24-2022 sig diff 11-22-2021 and 11-15-2021
+TukeyHSD(aov(Amp ~ Date, byslice_mydata))
+which(TukeyHSD(aov(Amp ~ Date, byslice_mydata))$Date[,4]<0.05)
+ggplot(aes(y=Halfwidth,x=Date),data=byslice_mydata) + geom_boxplot()
+summary(aov(Halfwidth ~ Date, byslice_mydata))
+ggplot(aes(y=logLat,x=Date),data=byslice_mydata) + geom_boxplot()
+summary(aov(logLat ~ Date, byslice_mydata))
+ggplot(aes(y=logNormLat,x=Date),data=byslice_mydata) + geom_boxplot()
+kruskal.test(logNormLat ~ Date, byslice_mydata)
+ggplot(aes(y=Rise,x=Date),data=byslice_mydata) + geom_boxplot()
+summary(aov(Rise ~ Date, byslice_mydata))
+ggplot(aes(y=Decay,x=Date),data=byslice_mydata) + geom_boxplot()
+summary(aov(logDecay ~ Date, byslice_mydata))
+
+### does sex sig affect parameters? no
+ggplot(aes(y=Amp,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(Amp ~ Sex, byslice_mydata)
+ggplot(aes(y=Halfwidth,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(Halfwidth ~ Sex, byslice_mydata)
+ggplot(aes(y=logLat,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(logLat ~ Sex, byslice_mydata)
+ggplot(aes(y=logNormLat,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(logNormLat ~ Sex, byslice_mydata)
+ggplot(aes(y=Rise,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(Rise ~ Sex, byslice_mydata)
+ggplot(aes(y=Decay,x=Sex),data=byslice_mydata) + geom_boxplot()
+t.test(logDecay ~ Sex, byslice_mydata)
+
+
+#########################################################################
+################## COMPARED BASED ON STIM LAYER AND REC LAYER############
+#########################################################################
+
+### amp
+byslice_mydata %>% group_by(Layers) %>% summarize(ampmean=mean(Amp),sdamp=sd(Amp),n=n(),seamp=(sd(Amp))/(sqrt(n())))
+ampplot <- ggplot(aes(y=Amp,x=Stim_Layer,fill=Layers),data=byslice_mydata) + 
+              geom_boxplot() +
+              theme_classic() +
+              scale_y_continuous(expand=c(0,0),limits=c(0,1),breaks=seq(0,1,0.2)) +
+              labs(x="Stimulation Layer",y= "Amplitude (% \u0394 F/F)") +
+              scale_fill_manual(values=c("#00AFBB", "darkorchid2")) +
+              theme(
+                     panel.background = element_rect(fill='transparent'),
+                     plot.background = element_rect(fill='transparent', color=NA),
+                     panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     legend.background = element_rect(fill='transparent')
+                     # legend.box.background = element_rect(fill='transparent')
+                   ) 
+ampplot
+# ggsave(filename="ampplot.png",bg = "transparent", dpi = 2000,width = 4.15, height = 3.25, units = "in")
+# amplm <- lm(Amp ~ Layers*Stim_Layer,data=byslice_mydata)
+# summary(aov(Amp ~ Layers*Stim_Layer,data=byslice_mydata))
+# amplme <- lme(Amp ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(amplm, type="predictor")
+# vif(amplme, type="predictor")
+# AIC(amplm)
+# AIC(amplme)
+# summary(amplm)
+# qqnorm(resid(amplm))
+# qplot(x=fitted(amplm), y=resid(amplm))
+# Anova(amplm,type=3)
+# emmeans(amplm,pairwise~Layers)
+aovamp <- aov(Amp ~ Layers*Stim_Layer,data=byslice_mydata)
+vif(aovamp,type="predictor")
+summary(aovamp)
+TukeyHSD(aovamp)$`Layers`
+
+### halfwidth
+byslice_mydata %>% group_by(Layers) %>% summarize(halfmean=mean(Halfwidth),sdhalf=sd(Halfwidth),n=n(),sehalf=(sd(Halfwidth))/(sqrt(n())))
+halfwidthplot <- ggplot(aes(y=Halfwidth,x=Stim_Layer,fill=Layers),data=byslice_mydata) + 
+                    geom_boxplot() +
+                    theme_classic() +
+                    scale_y_continuous(expand=c(0,0),limits=c(0,8),breaks=seq(0,8,2)) +
+                    labs(x="Stimulation Layer",y= "Half-width (msec)") +
+                    scale_fill_manual(values=c("#00AFBB", "darkorchid2")) +
+                    theme(
+                           panel.background = element_rect(fill='transparent'),
+                           plot.background = element_rect(fill='transparent', color=NA),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           legend.background = element_rect(fill='transparent')
+                           # legend.box.background = element_rect(fill='transparent')
+                         ) 
+halfwidthplot
+# ggsave(filename="halfwidthplot.png",bg = "transparent", dpi = 2000,width = 3.75, height = 3.25, units = "in")
+# halflm <- lm(Halfwidth ~ Layers*Stim_Layer,data=byslice_mydata)
+# summary(aov(Halfwidth ~ Layers*Stim_Layer,data=byslice_mydata))
+# halflme <- lme(Halfwidth ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(halflm, type="predictor")
+# vif(halflme, type="predictor")
+# AIC(halflm)
+# AIC(halflme)
+# summary(halflm)
+# qqnorm(resid(halflm))
+# qplot(x=fitted(halflm), y=resid(halflm))
+# Anova(halflm,type=3)
+aovhalf <- aov(Halfwidth ~ Layers*Stim_Layer,data=byslice_mydata)
+vif(aovhalf,type="predictor")
+summary(aovhalf)
+TukeyHSD(aovhalf)$`Layers`
+
+
+
+### log latency
+byslice_mydata %>% group_by(Stim_Layer,Layers) %>% summarize(distmean=mean(Dist),sddist=sd(Dist),n=n(),sedist=(sd(Dist))/(sqrt(n())))
+byslice_mydata %>% group_by(Laminar) %>% summarize(distmean=mean(Dist),sddist=sd(Dist),n=n(),sedist=(sd(Dist))/(sqrt(n())))
+# logLatdensityplot <- ggplot(aes(x=logLat,fill=Stim_Layer),data=byslice_mydata) +
+latplot <- 
+          # ggplot(aes(y=Latency,x=Laminar,fill=Stim_Layer),data=byslice_mydata) +
+          # ggplot(aes(y=Latency,x=Layers,fill=Stim_Layer),data=byslice_mydata) +
+          ggplot(aes(y=Latency,x=Dist),data=byslice_mydata) +
+            geom_point() +
+            geom_smooth(method=lm,se=F,color="blue") +
+            # geom_boxplot() +
+            theme_classic() +
+            # scale_y_continuous(expand=c(0,0),limits=c(0,8),breaks=seq(0,8,2)) +
+            scale_x_continuous(expand=c(0,0),limits=c(0,350),breaks=seq(0,350,50)) +
+            scale_y_continuous(expand=c(0,0),limits=c(0,6),breaks=seq(0,6,2)) +
+            labs(x="",y= "Latency (msec)") +
+             scale_fill_manual(values=c("darkorange", "green4")) +
+             # scale_fill_manual(values=c("darkorange", "darkorange4","green2","green4")) +
+            theme(
+                   panel.background = element_rect(fill='transparent'),
+                   plot.background = element_rect(fill='transparent', color=NA),
+                   panel.grid.major = element_blank(),
+                   panel.grid.minor = element_blank(),
+                   legend.background = element_rect(fill='transparent')
+                 )
+latplot
+# ggsave(filename="latvsdistplot.png",bg = "transparent", dpi = 2000,width = 3.25, height = 3.25, units = "in")
+cor.test(byslice_mydata$Latency,byslice_mydata$Dist)
+# ggsave(filename="latplot.png",bg = "transparent", dpi = 2000,width = 4.15, height = 3.25, units = "in")
+# loglatlm1 <- lm(logLat ~ Layers*Stim_Layer,data=byslice_mydata)
+loglatlm2 <- lm(logLat ~ Dist+Layers*Stim_Layer,data=byslice_mydata)
+# summary(loglatlm2)
+# emmeans(loglatlm2,pairwise ~ Stim_Layer)
+# Anova(loglatlm2,type=3)
+# summary(aov(logLat ~ Dist+Layers*Stim_Layer,data=byslice_mydata))
+# summary(aov(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Layers=="2_3"),]))
+# summary(aov(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Layers=="4"),]))
+# emmeans(lm(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Layers=="2_3"),]),pairwise ~ Stim_Layer)
+# emmeans(lm(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Layers=="4"),]),pairwise ~ Stim_Layer)
+# emmeans(lm(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Laminar=="Inter"),]),pairwise ~ Stim_Layer)
+# emmeans(lm(logLat ~ Dist+Stim_Layer,data=byslice_mydata[which(byslice_mydata$Laminar=="Intra"),]),pairwise ~ Stim_Layer)
+# summary(aov(logLat ~ Dist+Laminar, data=byslice_mydata))
+# ggplot(aes(x=Dist,y=logLat,color=stimlayerXreclayer),data=byslice_mydata) +
+#         scale_y_continuous(expand=c(0,0),limits=c(0,2),breaks=seq(0,2,0.5)) +
+#         scale_x_continuous(expand=c(0,0),limits=c(0,350),breaks=seq(0,350,50)) +
+# # ggplot(aes(x=Dist,y=Latency,color=stimlayerXreclayer),data=byslice_mydata) +
+# #         scale_y_continuous(expand=c(0,0),limits=c(0,6),breaks=seq(0,6,1)) +
+# #         scale_x_continuous(expand=c(0,0),limits=c(0,350),breaks=seq(0,350,50)) +
+#         geom_smooth(method="lm", se=F) +
+#         geom_point() +
+#         theme_classic() 
+# loglatlme1 <- lme(logLat ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# loglatlme2 <- lme(logLat ~ Dist+Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(loglatlm1, type="predictor")
+vif(loglatlm2, type="predictor")
+# vif(loglatlme1, type="predictor")
+# vif(loglatlme2, type="predictor")
+# AIC(loglatlm1)
+# AIC(loglatlm2)
+# AIC(loglatlme1)
+# AIC(loglatlme2)
+summary(loglatlm2)
+# qqnorm(resid(loglatlm2))
+# qplot(x=fitted(loglatlm2), y=resid(loglatlm2))
+# t.test(logLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Laminar=="Intra"),])
+# t.test(logLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Laminar=="Inter"),])
+aovloglatdist <- aov(logLat ~ Dist, data=byslice_mydata)
+summary(aovloglatdist)
+
+### log norm latency
+#####
+byslice_mydata %>% group_by(Stim_Layer) %>% summarize(normlatmean=mean(NormLat),sdnormlat=sd(NormLat),n=n(),senormlat=(sd(NormLat))/(sqrt(n())))
+byslice_mydata %>% group_by(Stim_Layer,Layers) %>% summarize(normlatmean=mean(NormLat),sdnormlat=sd(NormLat),n=n(),senormlat=(sd(NormLat))/(sqrt(n())))
+normlatplot <- ggplot(aes(y=NormLat,x=Laminar,fill=Stim_Layer),data=byslice_mydata) +
+                geom_boxplot() +
+                theme_classic() +
+                scale_y_continuous(expand=c(0,0),limits=c(0,0.03),breaks=seq(0,0.03,0.01)) +
+                labs(x="",y= "Distance-Normalized Latency (msec/\u03bcm)") +
+                 scale_fill_manual(values=c("darkorange", "green4")) +
+                 # scale_fill_manual(values=c("darkorange", "darkorange4","green2","green4")) +
+                theme(
+                       panel.background = element_rect(fill='transparent'),
+                       plot.background = element_rect(fill='transparent', color=NA),
+                       panel.grid.major = element_blank(),
+                       panel.grid.minor = element_blank(),
+                       legend.background = element_rect(fill='transparent')
+                     )
+normlatplot
+# ggsave(filename="normlatplot.png",bg = "transparent", dpi = 2000,width = 4.15, height = 3.25, units = "in")
+# logNormLatlm <- lm(logNormLat ~ Layers*Stim_Layer,data=byslice_mydata)
+# logNormLatlme <- lme(logNormLat ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(logNormLatlm, type="predictor")
+# vif(logNormLatlme, type="predictor")
+# AIC(logNormLatlm)
+# AIC(logNormLatlme)
+# summary(logNormLatlm)
+# emmeans(logNormLatlm,pairwise~Stim_Layer)
+# emmeans(logNormLatlm,pairwise~Stim_Layer*Layers)
+# Anova(logNormLatlm,type=3)
+aovlognormlat <- aov(logNormLat ~ Layers*Stim_Layer,data=byslice_mydata)
+vif(aovlognormlat,type="predictor")
+summary(aovlognormlat)
+TukeyHSD(aovlognormlat)$`Stim_Layer`
+TukeyHSD(aovlognormlat)$`Layers:Stim_Layer`
+# qqnorm(resid(logNormLatlm))
+# qplot(x=fitted(logNormLatlm), y=resid(logNormLatlm))
+t.test(logNormLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Layers=="2_3"),])
+t.test(logNormLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Layers=="4"),])
+t.test(logNormLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Laminar=="Intra"),])
+t.test(logNormLat ~ Stim_Layer, data=byslice_mydata[which(byslice_mydata$Laminar=="Inter"),])
+#####
+
+### rise
+byslice_mydata %>% group_by(Layers) %>% summarize(risemean=mean(Rise),sdrise=sd(Rise),n=n(),serise=(sd(Rise))/(sqrt(n())))
+risedensityplot <- ggplot(aes(x=Rise,fill=Layers),data=byslice_mydata) + 
+                    geom_density(alpha=0.9) +
+                    theme_classic() +
+                    scale_fill_manual(values=c("#00AFBB", "darkorchid2")) +
+                    scale_y_continuous(expand=c(0,0),limits=c(0,1),breaks=seq(0,1,0.2)) +
+                    scale_x_continuous(expand=c(0,0),limits=c(0,4),breaks=seq(0,4,1)) +
+                    labs(x="Rise Time (msec)",y= "Density") +
+                    theme(
+                           panel.background = element_rect(fill='transparent'),
+                           plot.background = element_rect(fill='transparent', color=NA),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           legend.background = element_rect(fill='transparent')
+                         ) 
+risedensityplot
+# ggsave(filename="Risedensityplot.png",bg = "transparent", dpi = 2000,width = 4.15, height = 3.55, units = "in")
+riseplot <- ggplot(aes(y=Rise,x=Stim_Layer,fill=Layers),data=byslice_mydata) +  
+                  geom_boxplot() +
+                  theme_classic() +
+                  scale_y_continuous(expand=c(0,0),limits=c(0,4),breaks=seq(0,4,1)) +
+                  labs(x="PV Interneuron Layer",y= "Rise Time (msec)") +
+                  scale_fill_manual(values=c("#00AFBB", "darkorchid2")) +
+                  theme(
+                         panel.background = element_rect(fill='transparent'),
+                         plot.background = element_rect(fill='transparent', color=NA),
+                         panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         legend.background = element_rect(fill='transparent')
+                         # legend.box.background = element_rect(fill='transparent')
+                       ) 
+riseplot
+# ggsave(filename="riseplot.png",bg = "transparent", dpi = 2000,width = 3.75, height = 3.25, units = "in")
+# riselm <- lm(Rise ~ Layers*Stim_Layer,data=byslice_mydata)
+# summary(aov(Rise ~ Layers*Stim_Layer,data=byslice_mydata))
+# riselme <- lme(Rise ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(riselm, type="predictor")
+# vif(riselme, type="predictor")
+# AIC(riselm)
+# AIC(riselme)
+# summary(riselm)
+# Anova(riselm,type=3)
+# qqnorm(resid(riselm))
+# qplot(x=fitted(riselm), y=resid(riselm))
+aovrise <- aov(Rise ~ Layers*Stim_Layer,data=byslice_mydata)
+vif(aovrise,type="predictor")
+summary(aovrise)
+TukeyHSD(aovrise)$`Layers`
+
+### log decay
+byslice_mydata %>% group_by(Layers) %>% summarize(meandecay = mean(Decay), sedecay=(sd(Decay)/sqrt(nrow(byslice_mydata))))
+decayplot <- ggplot(aes(y=Decay,x=Stim_Layer,fill=Layers),data=byslice_mydata) +  
+                  geom_boxplot() +
+                  theme_classic() +
+                  scale_y_continuous(expand=c(0,0),limits=c(0,5),breaks=seq(0,5,1)) +
+                  scale_fill_manual(values=c("#00AFBB", "darkorchid2")) +
+                  labs(x="Stimulation Layer",y= "Log Decay Time (msec)") +
+                  theme(
+                         panel.background = element_rect(fill='transparent'),
+                         plot.background = element_rect(fill='transparent', color=NA),
+                         panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         legend.background = element_rect(fill='transparent')
+                         # legend.box.background = element_rect(fill='transparent')
+                       ) 
+decayplot
+# ggsave(filename="decayplot.png",bg = "transparent", dpi = 2000,width = 3.75, height = 3.25, units = "in")
+# logdecaylm <- lm(logDecay ~ Layers*Stim_Layer,data=byslice_mydata)
+# summary(aov(logDecay ~ Layers*Stim_Layer,data=byslice_mydata))
+# logdecaylme <- lme(logDecay ~ Layers*Stim_Layer,random = ~1|Date,data=byslice_mydata)
+# vif(logdecaylm, type="predictor")
+# vif(logdecaylme, type="predictor")
+# AIC(logdecaylm)
+# AIC(logdecaylme)
+# summary(logdecaylm)
+# Anova(logdecaylm,type=3)
+# qqnorm(resid(logdecaylm))
+# qplot(x=fitted(logdecaylm), y=resid(logdecaylm))
+aovlogdecay <- aov(logDecay ~ Layers*Stim_Layer,data=byslice_mydata)
+vif(aovlogdecay,type="predictor")
+summary(aovlogdecay)
+
+
+```
+
