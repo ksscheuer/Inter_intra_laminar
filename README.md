@@ -1,1 +1,1 @@
-"# Inter_intra_laminar" 
+"# Data and analysis code for the paper "Inter and Intralaminar Excitation of Parvalbumin Interneurons in Mouse Barrel Cortex" by Kate S. Scheuer, Anna M. Jansson, Xinyu Zhao, and Meyer B. Jackson. The CSV file contains data, while the R file contains analysis code. To replicate results and graphs from the paper, download both files and run the R code." 
